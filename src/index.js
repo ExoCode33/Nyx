@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Client, Collection, GatewayIntentBits } = require('discord.js');
+const { Client, Collection, GatewayIntentBits, REST, Routes } = require('discord.js');
 const config = require('../config');
 const db = require('./database/pool');
 const { logger, logError } = require('./utils/logger');
@@ -87,6 +87,44 @@ async function initDatabaseIfNeeded() {
   } catch (error) {
     logError(error, { component: 'database_init' });
     throw error;
+  }
+}
+
+/**
+ * Register slash commands with Discord
+ */
+async function registerCommands() {
+  try {
+    logger.info('Registering slash commands with Discord...');
+
+    const commands = [];
+    const commandsPath = path.join(__dirname, 'commands');
+    const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
+    for (const file of commandFiles) {
+      const command = require(path.join(commandsPath, file));
+      if (command.data) {
+        commands.push(command.data.toJSON());
+      }
+    }
+
+    const rest = new REST().setToken(config.discord.token);
+
+    const data = await rest.put(
+      Routes.applicationCommands(config.discord.clientId),
+      { body: commands },
+    );
+
+    logger.info(`✅ Successfully registered ${data.length} slash commands`);
+    
+    data.forEach(cmd => {
+      logger.info(`  - /${cmd.name}`);
+    });
+
+  } catch (error) {
+    logError(error, { component: 'command_registration' });
+    // Don't throw - bot can still work without slash commands registered
+    logger.warn('Failed to register commands, but bot will continue');
   }
 }
 
@@ -188,6 +226,9 @@ async function main() {
     
     // Initialize database schema if needed
     await initDatabaseIfNeeded();
+    
+    // Register slash commands with Discord
+    await registerCommands();
     
     // Login to Discord
     logger.info('Logging in to Discord...');
