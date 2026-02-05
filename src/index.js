@@ -44,6 +44,52 @@ async function shutdown() {
   }
 }
 
+/**
+ * Initialize database schema if needed
+ */
+async function initDatabaseIfNeeded() {
+  try {
+    // Check if tables exist
+    const result = await db.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'guilds'
+      );
+    `);
+
+    if (result.rows[0].exists) {
+      logger.info('Database tables already exist');
+      return;
+    }
+
+    // Tables don't exist, initialize schema
+    logger.info('Initializing database schema...');
+    const schemaPath = path.join(__dirname, 'database', 'schema.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+    await db.query(schema);
+    
+    logger.info('✅ Database schema initialized successfully');
+
+    // Verify tables
+    const tables = await db.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name
+    `);
+
+    logger.info('Created tables:');
+    tables.rows.forEach(row => {
+      logger.info(`  - ${row.table_name}`);
+    });
+
+  } catch (error) {
+    logError(error, { component: 'database_init' });
+    throw error;
+  }
+}
+
 // Create Discord client
 const client = new Client({
   intents: [
@@ -139,6 +185,9 @@ async function main() {
     // Connect to database
     logger.info('Connecting to database...');
     await db.connect();
+    
+    // Initialize database schema if needed
+    await initDatabaseIfNeeded();
     
     // Login to Discord
     logger.info('Logging in to Discord...');
