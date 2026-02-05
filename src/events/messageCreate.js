@@ -15,17 +15,44 @@ module.exports = {
   name: 'messageCreate',
   
   async execute(message) {
+    // DEBUG: Log every single message received
+    console.log('===========================================');
+    console.log('📨 MESSAGE RECEIVED');
+    console.log('Content:', message.content);
+    console.log('Author:', message.author.tag);
+    console.log('Is Bot:', message.author.bot);
+    console.log('Has Guild:', !!message.guild);
+    console.log('Guild ID:', message.guild?.id);
+    console.log('Channel ID:', message.channel?.id);
+    console.log('===========================================');
+
     // Ignore bot messages and DMs
-    if (!message.guild || message.author.bot) return;
+    if (!message.guild) {
+      console.log('⏭️ SKIPPED: No guild (DM message)');
+      return;
+    }
+
+    if (message.author.bot) {
+      console.log('⏭️ SKIPPED: Bot message');
+      return;
+    }
+
+    console.log('✅ MESSAGE ELIGIBLE FOR SCANNING');
 
     // Extract URLs from message
     const urls = message.content.match(URL_PATTERN);
-    if (!urls || urls.length === 0) return;
+    console.log('🔍 URL EXTRACTION RESULT:', urls);
+
+    if (!urls || urls.length === 0) {
+      console.log('⏭️ NO URLs FOUND in message');
+      return;
+    }
 
     // Remove duplicates
     const uniqueUrls = [...new Set(urls)];
+    console.log('🔗 UNIQUE URLs to scan:', uniqueUrls);
 
-    logger.debug({
+    logger.info({
       userId: message.author.id,
       guildId: message.guild.id,
       channelId: message.channel.id,
@@ -33,12 +60,14 @@ module.exports = {
     }, 'Processing message with URLs');
 
     // Check rate limit
+    console.log('⏱️ Checking rate limit...');
     const isLimited = rateLimiter.isRateLimited(
       message.author.id,
       message.guild.id
     );
 
     if (isLimited) {
+      console.log('🚫 RATE LIMITED!');
       logger.warn({
         userId: message.author.id,
         guildId: message.guild.id
@@ -50,7 +79,7 @@ module.exports = {
           allowedMentions: { repliedUser: false }
         });
       } catch (error) {
-        // Ignore if we can't send the message
+        console.error('❌ Failed to send rate limit message:', error);
       }
 
       // Still scan the links but mark as rate limited
@@ -72,16 +101,43 @@ module.exports = {
       return;
     }
 
+    console.log('✅ NOT RATE LIMITED - Proceeding with scan');
+
     // Scan each URL
     for (const url of uniqueUrls) {
+      console.log('-------------------------------------------');
+      console.log('🔎 SCANNING URL:', url);
+      
       try {
         // Scan the URL
+        console.log('📡 Calling urlScanner.scan()...');
         const scanResult = await urlScanner.scan(url, message.guild.id);
+        
+        console.log('📊 SCAN COMPLETE:', {
+          domain: scanResult.resolvedDomain,
+          score: scanResult.heuristicScore,
+          signals: scanResult.signals,
+          isBlocked: scanResult.isBlocked,
+          isAllowed: scanResult.isAllowed
+        });
 
         // Enforce based on scan result
-        await enforcement.enforce(message, scanResult);
+        console.log('⚖️ Calling enforcement.enforce()...');
+        const enforcementResult = await enforcement.enforce(message, scanResult);
+        
+        console.log('✅ ENFORCEMENT COMPLETE:', {
+          tier: enforcementResult.tier.label,
+          action: enforcementResult.actionTaken,
+          success: enforcementResult.success
+        });
 
       } catch (error) {
+        console.error('❌ ERROR PROCESSING URL:', {
+          url,
+          error: error.message,
+          stack: error.stack
+        });
+        
         logger.error({
           error: error.message,
           url,
@@ -90,5 +146,9 @@ module.exports = {
         }, 'Error processing URL');
       }
     }
+    
+    console.log('===========================================');
+    console.log('🏁 MESSAGE PROCESSING COMPLETE');
+    console.log('===========================================');
   }
 };
