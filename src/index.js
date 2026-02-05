@@ -129,6 +129,7 @@ async function registerCommands() {
 }
 
 // Create Discord client
+console.log('🤖 Creating Discord client...');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -139,6 +140,12 @@ const client = new Client({
     status: 'online'
   }
 });
+
+console.log('✅ Client created with intents:', [
+  'Guilds',
+  'GuildMessages', 
+  'MessageContent'
+]);
 
 // Load commands
 client.commands = new Collection();
@@ -153,37 +160,53 @@ if (fs.existsSync(commandsPath)) {
       const command = require(path.join(commandsPath, file));
       if (command.data && command.execute) {
         client.commands.set(command.data.name, command);
-        logger.info({ command: command.data.name }, 'Loaded command');
+        console.log(`✅ Loaded command: ${command.data.name}`);
       }
     } catch (error) {
+      console.error(`❌ Failed to load command ${file}:`, error.message);
       logError(error, { component: 'command_loader', file });
     }
   }
 }
 
 // Load events
+console.log('\n📂 Loading events...');
 const eventsPath = path.join(__dirname, 'events');
 const eventFiles = fs.readdirSync(eventsPath)
   .filter(file => file.endsWith('.js'));
 
+console.log(`Found ${eventFiles.length} event files:`, eventFiles);
+
 for (const file of eventFiles) {
   try {
+    console.log(`\n🔄 Loading event file: ${file}`);
     const event = require(path.join(eventsPath, file));
     
+    console.log(`   - Event name: ${event.name}`);
+    console.log(`   - Once: ${event.once || false}`);
+    console.log(`   - Has execute: ${typeof event.execute === 'function'}`);
+    
     if (event.once) {
-      client.once(event.name, (...args) => event.execute(...args));
+      client.once(event.name, (...args) => {
+        console.log(`🔔 Event triggered (ONCE): ${event.name}`);
+        event.execute(...args);
+      });
     } else {
-      client.on(event.name, (...args) => event.execute(...args));
+      client.on(event.name, (...args) => {
+        console.log(`🔔 Event triggered: ${event.name}`);
+        event.execute(...args);
+      });
     }
     
-    logger.info({ 
-      event: event.name, 
-      once: event.once || false 
-    }, 'Loaded event');
+    console.log(`✅ Event registered: ${event.name}`);
+    logger.info({ event: event.name, once: event.once || false }, 'Loaded event');
   } catch (error) {
+    console.error(`❌ Failed to load event ${file}:`, error.message);
     logError(error, { component: 'event_loader', file });
   }
 }
+
+console.log('\n✅ All events loaded\n');
 
 // Command interaction handler
 client.on('interactionCreate', async (interaction) => {
@@ -219,6 +242,7 @@ client.on('interactionCreate', async (interaction) => {
 async function main() {
   try {
     logger.info('Starting Nyx Watchdog Bot...');
+    console.log('\n🚀 Starting Nyx Watchdog Bot...\n');
     
     // Connect to database
     logger.info('Connecting to database...');
@@ -232,9 +256,13 @@ async function main() {
     
     // Login to Discord
     logger.info('Logging in to Discord...');
+    console.log('\n🔐 Logging in to Discord...\n');
     await client.login(config.discord.token);
     
+    console.log('\n✅ Login successful!\n');
+    
   } catch (error) {
+    console.error('\n❌ Fatal error during initialization:', error);
     logError(error, { component: 'initialization' });
     process.exit(1);
   }
