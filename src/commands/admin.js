@@ -6,7 +6,8 @@
 const { 
   SlashCommandBuilder, 
   EmbedBuilder,
-  PermissionFlagsBits 
+  PermissionFlagsBits,
+  ChannelType
 } = require('discord.js');
 const repository = require('../database/repository');
 const { logger } = require('../utils/logger');
@@ -16,6 +17,18 @@ module.exports = {
     .setName('nyx')
     .setDescription('Nyx Watchdog administration commands')
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('setup')
+        .setDescription('Configure bot settings for this server')
+        .addChannelOption(option =>
+          option
+            .setName('log_channel')
+            .setDescription('Channel for security logs and alerts')
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(false)
+        )
+    )
     .addSubcommand(subcommand =>
       subcommand
         .setName('stats')
@@ -99,6 +112,9 @@ module.exports = {
 
     try {
       switch (subcommand) {
+        case 'setup':
+          await this.handleSetup(interaction);
+          break;
         case 'stats':
           await this.handleStats(interaction);
           break;
@@ -126,6 +142,81 @@ module.exports = {
         content: '❌ An error occurred while processing your request.',
         ephemeral: true
       });
+    }
+  },
+
+  async handleSetup(interaction) {
+    const logChannel = interaction.options.getChannel('log_channel');
+
+    // Get current settings
+    const guild = await repository.getGuild(interaction.guildId);
+
+    if (!logChannel) {
+      // Show current configuration
+      const embed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('⚙️ Nyx Watchdog Configuration')
+        .setDescription(`Current settings for **${interaction.guild.name}**`)
+        .addFields(
+          {
+            name: '📋 Log Channel',
+            value: guild?.log_channel_id ? `<#${guild.log_channel_id}>` : 'Not set',
+            inline: true
+          },
+          {
+            name: '🛡️ Status',
+            value: guild?.enabled ? '✅ Enabled' : '❌ Disabled',
+            inline: true
+          }
+        )
+        .addFields({
+          name: '💡 Setup Instructions',
+          value: 'Use `/nyx setup log_channel:#channel` to set the log channel where security alerts will be posted.'
+        })
+        .setFooter({ text: 'Nyx Watchdog • Server Security' })
+        .setTimestamp();
+
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return;
+    }
+
+    // Set log channel
+    await repository.setLogChannel(interaction.guildId, logChannel.id);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x10B981)
+      .setTitle('✅ Configuration Updated')
+      .setDescription('Security log channel has been configured successfully!')
+      .addFields({
+        name: '📋 Log Channel',
+        value: `${logChannel}`,
+        inline: false
+      })
+      .addFields({
+        name: '📝 What will be logged?',
+        value: '• Quarantined links\n• Deleted malicious links\n• High-risk detections\n• Admin actions'
+      })
+      .setFooter({ text: 'You can change this anytime with /nyx setup' })
+      .setTimestamp();
+
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+
+    // Send a test message to the log channel
+    try {
+      const testEmbed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle('🛡️ Nyx Watchdog - Log Channel Configured')
+        .setDescription('This channel has been set as the security log channel. All link security events will be posted here.')
+        .addFields({
+          name: 'Configured by',
+          value: `${interaction.user}`,
+          inline: true
+        })
+        .setTimestamp();
+
+      await logChannel.send({ embeds: [testEmbed] });
+    } catch (error) {
+      logger.warn({ error: error.message, channelId: logChannel.id }, 'Could not send test message to log channel');
     }
   },
 
