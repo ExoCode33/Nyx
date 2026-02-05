@@ -4,8 +4,8 @@
  */
 
 const { Pool } = require('pg');
-const config = require('../config');
-const { logger, logError } = require('./logger');
+const config = require('../../config');
+const { logger, logError } = require('../utils/logger');
 
 class Database {
   constructor() {
