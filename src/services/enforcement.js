@@ -1,6 +1,7 @@
 /**
  * Enforcement Service
  * Executes enforcement actions based on tier level
+ * All actions are logged to the log channel with professional embeds
  */
 
 const { EmbedBuilder } = require('discord.js');
@@ -10,6 +11,27 @@ const { logger, logEnforcement } = require('../utils/logger');
 const config = require('../../config');
 
 class EnforcementService {
+  /**
+   * Send notification to log channel if configured
+   */
+  async sendToLogChannel(guild, embed) {
+    try {
+      const guildData = await repository.getGuild(guild.id);
+      
+      if (!guildData || !guildData.log_channel_id) {
+        return; // No log channel configured
+      }
+
+      const logChannel = await guild.channels.fetch(guildData.log_channel_id);
+      
+      if (logChannel) {
+        await logChannel.send({ embeds: [embed] });
+      }
+    } catch (error) {
+      logger.debug({ error: error.message }, 'Could not send to log channel');
+    }
+  }
+
   /**
    * Execute enforcement action based on scan result
    */
@@ -28,7 +50,7 @@ class EnforcementService {
     try {
       switch (tier.label) {
         case 'SAFE':
-          actionTaken = 'allowed';
+          actionTaken = await this.handleSafe(message, scanResult, tier);
           break;
           
         case 'WARN':
@@ -76,46 +98,147 @@ class EnforcementService {
   }
 
   /**
+   * Handle SAFE tier - Log to channel only
+   */
+  async handleSafe(message, scanResult, tier) {
+    const embed = new EmbedBuilder()
+      .setColor(tier.color)
+      .setTitle(`${tier.emoji} Safe Link Scanned`)
+      .setDescription('Link passed all security checks')
+      .addFields(
+        { 
+          name: '👤 User', 
+          value: `<@${message.author.id}>`, 
+          inline: true 
+        },
+        { 
+          name: '📍 Channel', 
+          value: `<#${message.channel.id}>`, 
+          inline: true 
+        },
+        { 
+          name: '📊 Risk Score', 
+          value: `${scanResult.heuristicScore}/100`, 
+          inline: true 
+        },
+        { 
+          name: '🌐 Domain', 
+          value: `\`${scanResult.resolvedDomain}\``, 
+          inline: false 
+        }
+      )
+      .setFooter({ text: 'Nyx Security • No action required' })
+      .setTimestamp();
+
+    // Add scan details
+    const details = [];
+    if (scanResult.redirectHops > 0) {
+      details.push(`🔄 Redirects: ${scanResult.redirectHops}`);
+    }
+    if (scanResult.domainAgeDays !== null) {
+      details.push(`📅 Domain Age: ${scanResult.domainAgeDays} days`);
+    }
+    if (scanResult.safeBrowsingMatch === false) {
+      details.push(`🛡️ Safe Browsing: Clear`);
+    }
+
+    if (details.length > 0) {
+      embed.addFields({
+        name: '🔍 Scan Details',
+        value: details.join('\n'),
+        inline: false
+      });
+    }
+
+    await this.sendToLogChannel(message.guild, embed);
+    return 'logged';
+  }
+
+  /**
    * Handle WARN tier
    */
   async handleWarn(message, scanResult, tier) {
-    const embed = new EmbedBuilder()
+    // Send warning in the channel
+    const channelEmbed = new EmbedBuilder()
       .setColor(tier.color)
       .setTitle(`${tier.emoji} Suspicious Link Detected`)
-      .setDescription(tier.description)
+      .setDescription('⚠️ This link shows suspicious patterns. Proceed with caution.')
       .addFields(
         { 
-          name: 'Domain', 
+          name: '🌐 Domain', 
           value: `\`${scanResult.resolvedDomain}\``, 
           inline: true 
         },
         { 
-          name: 'Risk Score', 
+          name: '📊 Risk Score', 
           value: `${scanResult.heuristicScore}/100`, 
           inline: true 
         }
       )
-      .setFooter({ text: 'This warning will be automatically removed' })
+      .setFooter({ text: 'This warning will be automatically removed after 5 minutes' })
       .setTimestamp();
 
-    // Add signals if present
+    // Add risk factors
     if (scanResult.signals.length > 0) {
       const signalsText = scanResult.signals
         .filter(s => !s.startsWith('HEURISTIC_'))
-        .map(s => `• ${s.replace(/_/g, ' ')}`)
+        .map(s => `⚠️ ${s.replace(/_/g, ' ')}`)
         .join('\n');
       
       if (signalsText) {
-        embed.addFields({ 
-          name: 'Risk Factors', 
-          value: signalsText || 'None', 
+        channelEmbed.addFields({ 
+          name: '🚨 Risk Factors', 
+          value: signalsText, 
           inline: false 
         });
       }
     }
 
     try {
-      const warnMessage = await message.channel.send({ embeds: [embed] });
+      const warnMessage = await message.channel.send({ embeds: [channelEmbed] });
+
+      // Send detailed log to log channel
+      const logEmbed = new EmbedBuilder()
+        .setColor(tier.color)
+        .setTitle(`${tier.emoji} Warning Issued`)
+        .setDescription('Suspicious link detected and flagged')
+        .addFields(
+          { name: '👤 User', value: `<@${message.author.id}>`, inline: true },
+          { name: '📍 Channel', value: `<#${message.channel.id}>`, inline: true },
+          { name: '📊 Risk Score', value: `${scanResult.heuristicScore}/100`, inline: true },
+          { name: '🌐 Domain', value: `\`${scanResult.resolvedDomain}\``, inline: false },
+          { name: '🔗 Original URL', value: `||${scanResult.originalUrl}||`, inline: false }
+        )
+        .setFooter({ text: 'Nyx Security • Action: Warning posted' })
+        .setTimestamp();
+
+      // Add risk factors to log
+      if (scanResult.signals.length > 0) {
+        const signalsText = scanResult.signals.map(s => `• ${s.replace(/_/g, ' ')}`).join('\n');
+        logEmbed.addFields({ 
+          name: '🚨 Detected Risk Factors', 
+          value: signalsText, 
+          inline: false 
+        });
+      }
+
+      // Add scan details
+      const details = [];
+      if (scanResult.redirectHops > 0) {
+        details.push(`🔄 Redirect Hops: ${scanResult.redirectHops}`);
+      }
+      if (scanResult.domainAgeDays !== null) {
+        details.push(`📅 Domain Age: ${scanResult.domainAgeDays} days`);
+      }
+      if (details.length > 0) {
+        logEmbed.addFields({
+          name: '🔍 Additional Details',
+          value: details.join('\n'),
+          inline: false
+        });
+      }
+
+      await this.sendToLogChannel(message.guild, logEmbed);
 
       // Auto-delete warning after TTL
       if (config.enforcement.warnMessageTtlMs > 0) {
@@ -123,7 +246,6 @@ class EnforcementService {
           try {
             await warnMessage.delete();
           } catch (error) {
-            // Message might already be deleted
             logger.debug({ messageId: warnMessage.id }, 'Could not delete warn message');
           }
         }, config.enforcement.warnMessageTtlMs);
@@ -141,65 +263,109 @@ class EnforcementService {
    */
   async handleQuarantine(message, scanResult, tier) {
     // Delete original message
+    let messageDeleted = false;
     try {
       await message.delete();
+      messageDeleted = true;
     } catch (error) {
       logger.warn({ messageId: message.id }, 'Could not delete quarantined message');
     }
 
-    // Create quarantine notification with spoiler-tagged link
-    const embed = new EmbedBuilder()
+    // Send comprehensive log to log channel
+    const logEmbed = new EmbedBuilder()
       .setColor(tier.color)
       .setTitle(`${tier.emoji} Link Quarantined`)
-      .setDescription(tier.description)
+      .setDescription('⚠️ Potentially dangerous link detected and removed for review')
       .addFields(
         { 
-          name: 'Posted by', 
+          name: '👤 User', 
           value: `<@${message.author.id}>`, 
           inline: true 
         },
         { 
-          name: 'Channel', 
+          name: '📍 Channel', 
           value: `<#${message.channel.id}>`, 
           inline: true 
         },
         { 
-          name: 'Risk Score', 
+          name: '📊 Risk Score', 
           value: `${scanResult.heuristicScore}/100`, 
           inline: true 
         },
         { 
-          name: 'Domain', 
-          value: `\`${scanResult.resolvedDomain}\``, 
-          inline: false 
+          name: '🌐 Original Domain', 
+          value: `\`${scanResult.originalDomain}\``, 
+          inline: true 
         },
         { 
-          name: 'Link (Click to reveal)', 
+          name: '🎯 Resolved Domain', 
+          value: `\`${scanResult.resolvedDomain}\``, 
+          inline: true 
+        },
+        {
+          name: '✅ Message Deleted',
+          value: messageDeleted ? 'Yes' : 'Failed',
+          inline: true
+        },
+        { 
+          name: '🔗 Original URL', 
           value: `||${scanResult.originalUrl}||`, 
           inline: false 
         }
       )
-      .setFooter({ text: 'Moderators can review this in the admin panel' })
+      .setFooter({ text: 'Nyx Security • Action: Quarantined for review' })
       .setTimestamp();
 
     // Add risk factors
     if (scanResult.signals.length > 0) {
       const signalsText = scanResult.signals
         .filter(s => !s.startsWith('HEURISTIC_'))
-        .map(s => `• ${s.replace(/_/g, ' ')}`)
+        .map(s => `🚨 ${s.replace(/_/g, ' ')}`)
         .join('\n');
       
       if (signalsText) {
-        embed.addFields({ 
-          name: 'Risk Factors', 
+        logEmbed.addFields({ 
+          name: '⚠️ Risk Factors Detected', 
           value: signalsText, 
           inline: false 
         });
       }
     }
 
+    // Add scan details
+    const details = [];
+    if (scanResult.redirectHops > 0) {
+      details.push(`🔄 Redirects: ${scanResult.redirectHops} hops`);
+    }
+    if (scanResult.domainAgeDays !== null) {
+      details.push(`📅 Domain Age: ${scanResult.domainAgeDays} days`);
+    }
+    if (scanResult.heuristicDetails) {
+      const heurDetails = Object.entries(scanResult.heuristicDetails)
+        .filter(([key, val]) => val !== undefined && key !== 'error')
+        .map(([key, val]) => `• ${key}: ${JSON.stringify(val)}`)
+        .join('\n');
+      if (heurDetails) {
+        details.push(`\n**Heuristic Details:**\n${heurDetails}`);
+      }
+    }
+
+    if (details.length > 0) {
+      logEmbed.addFields({
+        name: '🔍 Scan Details',
+        value: details.join('\n'),
+        inline: false
+      });
+    }
+
+    logEmbed.addFields({
+      name: '📋 Next Steps',
+      value: '• Use `/nyx review` to see quarantined links\n• Moderators can review and take action\n• Link has been removed from the channel',
+      inline: false
+    });
+
     try {
-      await message.channel.send({ embeds: [embed] });
+      await this.sendToLogChannel(message.guild, logEmbed);
 
       // Add to review queue
       await repository.addToReviewQueue({
@@ -236,72 +402,134 @@ class EnforcementService {
     }
 
     // Send DM to user
+    let dmSent = false;
     try {
       const dmEmbed = new EmbedBuilder()
         .setColor(tier.color)
         .setTitle(`${tier.emoji} Malicious Link Removed`)
         .setDescription(
-          `A link you posted in **${message.guild.name}** was detected as malicious and has been removed.`
+          `🚨 A link you posted in **${message.guild.name}** was detected as malicious and has been automatically removed for your safety.`
         )
         .addFields(
           { 
-            name: 'Domain', 
+            name: '🌐 Domain', 
             value: `\`${scanResult.resolvedDomain}\``, 
             inline: true 
           },
           { 
-            name: 'Risk Score', 
+            name: '📊 Risk Score', 
             value: `${scanResult.heuristicScore}/100`, 
             inline: true 
           }
         )
         .addFields({
-          name: 'What should I do?',
-          value: '• Verify links before sharing\n• Avoid clicking suspicious links\n• Contact server moderators if you believe this was a mistake'
+          name: '⚠️ What should you do?',
+          value: '• ✅ Verify links before sharing\n• ❌ Avoid clicking suspicious links\n• 📞 Contact server moderators if you believe this was a mistake\n• 🛡️ Run a security scan on your device',
+          inline: false
         })
-        .setFooter({ text: 'This action was taken automatically by Nyx Security' })
+        .setFooter({ text: 'Nyx Security • Automated Protection' })
         .setTimestamp();
 
       // Add threat information
       if (scanResult.threatTypes.length > 0) {
         dmEmbed.addFields({
-          name: 'Detected Threats',
+          name: '🚨 Detected Threats',
           value: scanResult.threatTypes.map(t => `• ${t}`).join('\n'),
           inline: false
         });
       }
 
       await message.author.send({ embeds: [dmEmbed] });
+      dmSent = true;
     } catch (error) {
-      // User might have DMs disabled
       logger.debug({ userId: message.author.id }, 'Could not send DM to user');
     }
 
-    // Send notification in channel
-    try {
-      const channelEmbed = new EmbedBuilder()
-        .setColor(tier.color)
-        .setTitle(`${tier.emoji} Malicious Link Removed`)
-        .setDescription(`A message from <@${message.author.id}> contained a malicious link and was removed.`)
-        .addFields(
-          { 
-            name: 'Domain', 
-            value: `\`${scanResult.resolvedDomain}\``, 
-            inline: true 
-          },
-          { 
-            name: 'Reason', 
-            value: scanResult.signals[0]?.replace(/_/g, ' ') || 'Security threat', 
-            inline: true 
-          }
-        )
-        .setFooter({ text: 'Nyx Security' })
-        .setTimestamp();
+    // Send comprehensive log to log channel
+    const logEmbed = new EmbedBuilder()
+      .setColor(tier.color)
+      .setTitle(`${tier.emoji} Malicious Link Removed`)
+      .setDescription('🚨 **HIGH RISK** - Malicious link detected and immediately removed')
+      .addFields(
+        { 
+          name: '👤 User', 
+          value: `<@${message.author.id}>`, 
+          inline: true 
+        },
+        { 
+          name: '📍 Channel', 
+          value: `<#${message.channel.id}>`, 
+          inline: true 
+        },
+        { 
+          name: '📊 Risk Score', 
+          value: `**${scanResult.heuristicScore}/100**`, 
+          inline: true 
+        },
+        { 
+          name: '🌐 Original Domain', 
+          value: `\`${scanResult.originalDomain}\``, 
+          inline: true 
+        },
+        { 
+          name: '🎯 Resolved Domain', 
+          value: `\`${scanResult.resolvedDomain}\``, 
+          inline: true 
+        },
+        {
+          name: '⚡ Actions Taken',
+          value: `${messageDeleted ? '✅' : '❌'} Message Deleted\n${dmSent ? '✅' : '❌'} User Notified`,
+          inline: true
+        },
+        { 
+          name: '🔗 Malicious URL', 
+          value: `||${scanResult.originalUrl}||`, 
+          inline: false 
+        }
+      )
+      .setFooter({ text: 'Nyx Security • Action: Immediate Removal' })
+      .setTimestamp();
 
-      await message.channel.send({ embeds: [channelEmbed] });
-    } catch (error) {
-      logger.error({ error: error.message }, 'Failed to send deletion notification');
+    // Add threat types
+    if (scanResult.threatTypes.length > 0) {
+      logEmbed.addFields({
+        name: '☠️ Threat Classification',
+        value: scanResult.threatTypes.map(t => `🔴 ${t}`).join('\n'),
+        inline: false
+      });
     }
+
+    // Add risk factors
+    if (scanResult.signals.length > 0) {
+      const signalsText = scanResult.signals.map(s => `🚨 ${s.replace(/_/g, ' ')}`).join('\n');
+      logEmbed.addFields({ 
+        name: '⚠️ Detection Signals', 
+        value: signalsText, 
+        inline: false 
+      });
+    }
+
+    // Add scan details
+    const details = [];
+    if (scanResult.redirectHops > 0) {
+      details.push(`🔄 Redirect Chain: ${scanResult.redirectHops} hops`);
+    }
+    if (scanResult.domainAgeDays !== null) {
+      details.push(`📅 Domain Age: ${scanResult.domainAgeDays} days`);
+    }
+    if (scanResult.safeBrowsingMatch) {
+      details.push(`🛡️ Google Safe Browsing: ⚠️ MATCHED`);
+    }
+
+    if (details.length > 0) {
+      logEmbed.addFields({
+        name: '🔍 Technical Details',
+        value: details.join('\n'),
+        inline: false
+      });
+    }
+
+    await this.sendToLogChannel(message.guild, logEmbed);
 
     return messageDeleted ? 'deleted' : 'delete_failed';
   }
